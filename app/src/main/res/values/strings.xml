@@ -1,0 +1,18 @@
+<resources>
+    <string name="app_name">انبارداری</string>
+    <string name="add_product">افزودن کالا</string>
+    <string name="edit_product">ویرایش کالا</string>
+    <string name="product_name">نام کالا</string>
+    <string name="price">قیمت (تومان)</string>
+    <string name="quantity">تعداد</string>
+    <string name="save">ذخیره</string>
+    <string name="cancel">انصراف</string>
+    <string name="delete">حذف</string>
+    <string name="edit">ویرایش</string>
+    <string name="search">جستجوی نام کالا…</string>
+    <string name="empty_list">هنوز کالایی ثبت نشده است\nبرای افزودن روی دکمه + بزنید</string>
+    <string name="summary">تعداد اقلام: %1$d | ارزش انبار: %2$s تومان</string>
+    <string name="err_name">نام کالا را بنویسید</string>
+    <string name="err_price">قیمت معتبر وارد کنید</string>
+    <string name="err_qty">تعداد معتبر وارد کنید</string>
+</resources>
