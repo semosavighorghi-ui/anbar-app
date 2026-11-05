@@ -1,0 +1,668 @@
+#!/usr/bin/env bash
+set -e
+
+# Create all project files (only on first run)
+if [ -f settings.gradle ] && grep -q "pluginManagement" settings.gradle; then
+  echo "== Project files already exist. Skipping. =="
+  exit 0
+fi
+
+mkdir -p app/src/main/java/com/example/anbar
+mkdir -p app/src/main/res/drawable app/src/main/res/layout app/src/main/res/values
+
+cat > settings.gradle << 'EOF'
+pluginManagement {
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+rootProject.name = "Anbar"
+include ':app'
+EOF
+
+cat > build.gradle << 'EOF'
+plugins {
+    id 'com.android.application' version '8.2.2' apply false
+    id 'org.jetbrains.kotlin.android' version '1.9.22' apply false
+}
+EOF
+
+cat > gradle.properties << 'EOF'
+org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+android.useAndroidX=true
+android.nonTransitiveRClass=true
+kotlin.code.style=official
+EOF
+
+cat > app/build.gradle << 'EOF'
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+}
+
+android {
+    namespace 'com.example.anbar'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.example.anbar"
+        minSdk 21
+        targetSdk 34
+        versionCode 1
+        versionName "1.0"
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    kotlinOptions {
+        jvmTarget = '17'
+    }
+    buildFeatures {
+        viewBinding true
+    }
+}
+
+dependencies {
+    implementation 'androidx.core:core-ktx:1.12.0'
+    implementation 'androidx.appcompat:appcompat:1.6.1'
+    implementation 'com.google.android.material:material:1.11.0'
+    implementation 'androidx.coordinatorlayout:coordinatorlayout:1.2.0'
+    implementation 'androidx.recyclerview:recyclerview:1.3.2'
+}
+EOF
+
+cat > app/src/main/AndroidManifest.xml << 'EOF'
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application
+        android:allowBackup="true"
+        android:icon="@drawable/ic_launcher"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Anbar">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+
+</manifest>
+EOF
+
+cat > app/src/main/java/com/example/anbar/Product.kt << 'EOF'
+package com.example.anbar
+
+import java.util.Locale
+
+data class Product(
+    val id: Long = 0,
+    val name: String,
+    val price: Long,
+    val quantity: Int
+)
+
+object Fa {
+    private val faDigits = "۰۱۲۳۴۵۶۷۸۹"
+
+    fun num(n: Long): String =
+        String.format(Locale.US, "%,d", n)
+            .map { c -> if (c in '0'..'9') faDigits[c - '0'] else c }
+            .joinToString("")
+}
+EOF
+
+cat > app/src/main/java/com/example/anbar/DbHelper.kt << 'EOF'
+package com.example.anbar
+
+import android.content.ContentValues
+import android.content.Context
+import android.database.sqlite.SQLiteDatabase
+import android.database.sqlite.SQLiteOpenHelper
+
+class DbHelper(context: Context) : SQLiteOpenHelper(context, "anbar.db", null, 1) {
+
+    override fun onCreate(db: SQLiteDatabase) {
+        db.execSQL(
+            "CREATE TABLE products(" +
+                "id INTEGER PRIMARY KEY AUTOINCREMENT," +
+                "name TEXT NOT NULL," +
+                "price INTEGER NOT NULL," +
+                "quantity INTEGER NOT NULL)"
+        )
+    }
+
+    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+        db.execSQL("DROP TABLE IF EXISTS products")
+        onCreate(db)
+    }
+
+    fun insert(p: Product): Long {
+        val cv = ContentValues().apply {
+            put("name", p.name)
+            put("price", p.price)
+            put("quantity", p.quantity)
+        }
+        return writableDatabase.insert("products", null, cv)
+    }
+
+    fun update(p: Product): Int {
+        val cv = ContentValues().apply {
+            put("name", p.name)
+            put("price", p.price)
+            put("quantity", p.quantity)
+        }
+        return writableDatabase.update("products", cv, "id=?", arrayOf(p.id.toString()))
+    }
+
+    fun delete(id: Long): Int =
+        writableDatabase.delete("products", "id=?", arrayOf(id.toString()))
+
+    fun getAll(search: String = ""): List<Product> {
+        val list = mutableListOf<Product>()
+        val cursor = if (search.isBlank())
+            writableDatabase.rawQuery("SELECT * FROM products ORDER BY id DESC", null)
+        else
+            writableDatabase.rawQuery(
+                "SELECT * FROM products WHERE name LIKE ? ORDER BY id DESC",
+                arrayOf("%$search%")
+            )
+        cursor.use {
+            while (it.moveToNext()) {
+                list.add(
+                    Product(
+                        id = it.getLong(0),
+                        name = it.getString(1),
+                        price = it.getLong(2),
+                        quantity = it.getInt(3)
+                    )
+                )
+            }
+        }
+        return list
+    }
+}
+EOF
+
+cat > app/src/main/java/com/example/anbar/ProductAdapter.kt << 'EOF'
+package com.example.anbar
+
+import android.view.LayoutInflater
+import android.view.ViewGroup
+import androidx.recyclerview.widget.RecyclerView
+import com.example.anbar.databinding.ItemProductBinding
+
+class ProductAdapter(
+    private val onEdit: (Product) -> Unit,
+    private val onDelete: (Product) -> Unit
+) : RecyclerView.Adapter<ProductAdapter.VH>() {
+
+    private var items: List<Product> = emptyList()
+
+    inner class VH(val b: ItemProductBinding) : RecyclerView.ViewHolder(b.root)
+
+    override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): VH =
+        VH(ItemProductBinding.inflate(LayoutInflater.from(parent.context), parent, false))
+
+    override fun getItemCount(): Int = items.size
+
+    override fun onBindViewHolder(holder: VH, position: Int) {
+        val p = items[position]
+        holder.b.txtName.text = p.name
+        holder.b.txtPrice.text = "قیمت: ${Fa.num(p.price)} تومان"
+        holder.b.txtQty.text = "موجودی: ${Fa.num(p.quantity.toLong())}"
+        holder.b.btnEdit.setOnClickListener { onEdit(p) }
+        holder.b.btnDelete.setOnClickListener { onDelete(p) }
+    }
+
+    fun submit(list: List<Product>) {
+        items = list
+        notifyDataSetChanged()
+    }
+}
+EOF
+
+cat > app/src/main/java/com/example/anbar/MainActivity.kt << 'EOF'
+package com.example.anbar
+
+import android.os.Bundle
+import android.text.Editable
+import android.text.TextWatcher
+import android.view.View
+import androidx.appcompat.app.AlertDialog
+import androidx.appcompat.app.AppCompatActivity
+import androidx.recyclerview.widget.LinearLayoutManager
+import com.example.anbar.databinding.ActivityMainBinding
+import com.example.anbar.databinding.DialogProductBinding
+
+class MainActivity : AppCompatActivity() {
+
+    private lateinit var b: ActivityMainBinding
+    private lateinit var db: DbHelper
+    private lateinit var adapter: ProductAdapter
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        b = ActivityMainBinding.inflate(layoutInflater)
+        setContentView(b.root)
+
+        db = DbHelper(this)
+
+        adapter = ProductAdapter(
+            onEdit = { showProductDialog(it) },
+            onDelete = { confirmDelete(it) }
+        )
+        b.recycler.layoutManager = LinearLayoutManager(this)
+        b.recycler.adapter = adapter
+
+        b.fab.setOnClickListener { showProductDialog(null) }
+
+        b.txtSearch.addTextChangedListener(object : TextWatcher {
+            override fun afterTextChanged(s: Editable?) = reload()
+            override fun beforeTextChanged(s: CharSequence?, a: Int, c: Int, d: Int) {}
+            override fun onTextChanged(s: CharSequence?, a: Int, c: Int, d: Int) {}
+        })
+
+        reload()
+    }
+
+    private fun reload() {
+        val list = db.getAll(b.txtSearch.text.toString())
+        adapter.submit(list)
+        b.txtEmpty.visibility = if (list.isEmpty()) View.VISIBLE else View.GONE
+        val totalValue = list.sumOf { it.price * it.quantity }
+        b.txtSummary.text = getString(R.string.summary, list.size, Fa.num(totalValue))
+    }
+
+    private fun showProductDialog(existing: Product?) {
+        val d = DialogProductBinding.inflate(layoutInflater)
+        existing?.let {
+            d.txtName.setText(it.name)
+            d.txtPrice.setText(it.price.toString())
+            d.txtQty.setText(it.quantity.toString())
+        }
+
+        val dialog = AlertDialog.Builder(this)
+            .setTitle(if (existing == null) R.string.add_product else R.string.edit_product)
+            .setView(d.root)
+            .setPositiveButton(R.string.save, null)
+            .setNegativeButton(R.string.cancel, null)
+            .create()
+
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val name = d.txtName.text.toString().trim()
+                val price = d.txtPrice.text.toString().trim().toLongOrNull() ?: -1L
+                val qty = d.txtQty.text.toString().trim().toIntOrNull() ?: -1
+
+                if (name.isEmpty()) {
+                    d.tilName.error = getString(R.string.err_name); return@setOnClickListener
+                }
+                if (price < 0) {
+                    d.tilPrice.error = getString(R.string.err_price); return@setOnClickListener
+                }
+                if (qty < 0) {
+                    d.tilQty.error = getString(R.string.err_qty); return@setOnClickListener
+                }
+
+                if (existing == null)
+                    db.insert(Product(name = name, price = price, quantity = qty))
+                else
+                    db.update(existing.copy(name = name, price = price, quantity = qty))
+
+                reload()
+                dialog.dismiss()
+            }
+        }
+        dialog.show()
+    }
+
+    private fun confirmDelete(p: Product) {
+        AlertDialog.Builder(this)
+            .setTitle(R.string.delete)
+            .setMessage("«${p.name}» حذف شود؟")
+            .setPositiveButton(R.string.delete) { _, _ ->
+                db.delete(p.id)
+                reload()
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+}
+EOF
+
+cat > app/src/main/res/values/strings.xml << 'EOF'
+<resources>
+    <string name="app_name">انبارداری</string>
+    <string name="add_product">افزودن کالا</string>
+    <string name="edit_product">ویرایش کالا</string>
+    <string name="product_name">نام کالا</string>
+    <string name="price">قیمت (تومان)</string>
+    <string name="quantity">تعداد</string>
+    <string name="save">ذخیره</string>
+    <string name="cancel">انصراف</string>
+    <string name="delete">حذف</string>
+    <string name="edit">ویرایش</string>
+    <string name="search">جستجوی نام کالا…</string>
+    <string name="empty_list">هنوز کالایی ثبت نشده است\nبرای افزودن روی دکمه + بزنید</string>
+    <string name="summary">تعداد اقلام: %1$d | ارزش انبار: %2$s تومان</string>
+    <string name="err_name">نام کالا را بنویسید</string>
+    <string name="err_price">قیمت معتبر وارد کنید</string>
+    <string name="err_qty">تعداد معتبر وارد کنید</string>
+</resources>
+EOF
+
+cat > app/src/main/res/values/colors.xml << 'EOF'
+<resources>
+    <color name="primary">#1565C0</color>
+    <color name="primary_dark">#0D47A1</color>
+    <color name="accent">#FF6F00</color>
+    <color name="white">#FFFFFF</color>
+    <color name="black">#000000</color>
+    <color name="gray">#757575</color>
+    <color name="bg">#F5F5F5</color>
+</resources>
+EOF
+
+cat > app/src/main/res/values/themes.xml << 'EOF'
+<resources>
+    <style name="Theme.Anbar" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/primary</item>
+        <item name="colorOnPrimary">@color/white</item>
+        <item name="colorSecondary">@color/accent</item>
+        <item name="android:statusBarColor">@color/primary_dark</item>
+        <item name="android:windowBackground">@color/bg</item>
+    </style>
+</resources>
+EOF
+
+cat > app/src/main/res/layout/activity_main.xml << 'EOF'
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.coordinatorlayout.widget.CoordinatorLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <com.google.android.material.appbar.AppBarLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content">
+
+        <com.google.android.material.appbar.MaterialToolbar
+            android:id="@+id/toolbar"
+            android:layout_width="match_parent"
+            android:layout_height="?attr/actionBarSize"
+            android:background="@color/primary"
+            app:title="@string/app_name"
+            app:titleTextColor="@color/white" />
+    </com.google.android.material.appbar.AppBarLayout>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical"
+        app:layout_behavior="@string/appbar_scrolling_view_behavior">
+
+        <EditText
+            android:id="@+id/txtSearch"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_margin="12dp"
+            android:background="@drawable/bg_search"
+            android:hint="@string/search"
+            android:inputType="text"
+            android:padding="12dp" />
+
+        <FrameLayout
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1">
+
+            <androidx.recyclerview.widget.RecyclerView
+                android:id="@+id/recycler"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:clipToPadding="false"
+                android:paddingBottom="90dp" />
+
+            <TextView
+                android:id="@+id/txtEmpty"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="center"
+                android:gravity="center"
+                android:text="@string/empty_list"
+                android:textColor="@color/gray"
+                android:visibility="gone" />
+        </FrameLayout>
+
+        <TextView
+            android:id="@+id/txtSummary"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="@color/white"
+            android:padding="12dp"
+            android:textColor="@color/black" />
+    </LinearLayout>
+
+    <com.google.android.material.floatingactionbutton.FloatingActionButton
+        android:id="@+id/fab"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom|start"
+        android:layout_margin="16dp"
+        android:contentDescription="@string/add_product"
+        android:src="@drawable/ic_add"
+        app:backgroundTint="@color/primary"
+        app:tint="@color/white" />
+</androidx.coordinatorlayout.widget.CoordinatorLayout>
+EOF
+
+cat > app/src/main/res/layout/item_product.xml << 'EOF'
+<?xml version="1.0" encoding="utf-8"?>
+<com.google.android.material.card.MaterialCardView
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_marginStart="12dp"
+    android:layout_marginEnd="12dp"
+    android:layout_marginTop="6dp"
+    android:layout_marginBottom="6dp"
+    app:cardCornerRadius="14dp"
+    app:cardElevation="2dp">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="12dp">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:id="@+id/txtName"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:textColor="@color/black"
+                android:textSize="16sp"
+                android:textStyle="bold" />
+
+            <ImageView
+                android:id="@+id/btnDelete"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="@string/delete"
+                android:padding="8dp"
+                android:src="@drawable/ic_delete"
+                app:tint="#D32F2F" />
+
+            <ImageView
+                android:id="@+id/btnEdit"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="@string/edit"
+                android:padding="8dp"
+                android:src="@drawable/ic_edit"
+                app:tint="@color/primary" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:orientation="horizontal">
+
+            <TextView
+                android:id="@+id/txtPrice"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:textColor="@color/gray"
+                android:textSize="14sp" />
+
+            <TextView
+                android:id="@+id/txtQty"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:textColor="@color/gray"
+                android:textSize="14sp" />
+        </LinearLayout>
+    </LinearLayout>
+</com.google.android.material.card.MaterialCardView>
+EOF
+
+cat > app/src/main/res/layout/dialog_product.xml << 'EOF'
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:paddingStart="20dp"
+    android:paddingEnd="20dp"
+    android:paddingTop="12dp">
+
+    <com.google.android.material.textfield.TextInputLayout
+        android:id="@+id/tilName"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="@string/product_name">
+
+        <com.google.android.material.textfield.TextInputEditText
+            android:id="@+id/txtName"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:inputType="text" />
+    </com.google.android.material.textfield.TextInputLayout>
+
+    <com.google.android.material.textfield.TextInputLayout
+        android:id="@+id/tilPrice"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:hint="@string/price">
+
+        <com.google.android.material.textfield.TextInputEditText
+            android:id="@+id/txtPrice"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:inputType="number" />
+    </com.google.android.material.textfield.TextInputLayout>
+
+    <com.google.android.material.textfield.TextInputLayout
+        android:id="@+id/tilQty"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:layout_marginBottom="8dp"
+        android:hint="@string/quantity">
+
+        <com.google.android.material.textfield.TextInputEditText
+            android:id="@+id/txtQty"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:inputType="number" />
+    </com.google.android.material.textfield.TextInputLayout>
+</LinearLayout>
+EOF
+
+cat > app/src/main/res/drawable/ic_add.xml << 'EOF'
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24">
+    <path android:fillColor="#FFFFFF"
+        android:pathData="M19,13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/>
+</vector>
+EOF
+
+cat > app/src/main/res/drawable/ic_edit.xml << 'EOF'
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24">
+    <path android:fillColor="#000000"
+        android:pathData="M3,17.25V21h3.75L17.81,9.94l-3.75,-3.75L3,17.25zM20.71,7.04c0.39,-0.39 0.39,-1.02 0,-1.41l-2.34,-2.34c-0.39,-0.39 -1.02,-0.39 -1.41,0l-1.83,1.83 3.75,3.75 1.83,-1.83z"/>
+</vector>
+EOF
+
+cat > app/src main/res/drawable/ic_delete.xml << 'EOF'
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24">
+    <path android:fillColor="#000000"
+        android:pathData="M6,19c0,1.1 0.9,2 2,2h8c1.1,0 2,-0.9 2,-2V7H6V19zM19,4h-3.5l-1,-1h-5l-1,1H5v2h14V4z"/>
+</vector>
+EOF
+
+cat > app/src/main/res/drawable/bg_search.xml << 'EOF'
+<shape xmlns:android="http://schemas.android.com/apk/res/android">
+    <solid android:color="@color/white"/>
+    <corners android:radius="12dp"/>
+</shape>
+EOF
+
+cat > app/src/main/res/drawable/ic_launcher.xml << 'EOF'
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <path android:fillColor="#1565C0" android:pathData="M0,0h108v108h-108z"/>
+    <path android:fillColor="#FFFFFF" android:pathData="M54,26 L84,42 L84,82 L24,82 L24,42 Z"/>
+    <path android:fillColor="#0D47A1" android:pathData="M38,54h32v28h-32z"/>
+    <path android:fillColor="#FFFFFF" android:pathData="M48,82v-14h12v14z"/>
+</vector>
+EOF
+
+git config user.name "github-actions[bot]"
+git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+git add -A                                                                                              
+git commit -m "Add Anbar inventory app source"
+git push  
+
+echo "== All project files created successfully =="
