@@ -632,7 +632,7 @@ cat > app/src/main/res/drawable/ic_edit.xml << 'EOF'
 </vector>
 EOF
 
-cat > app/src main/res/drawable/ic_delete.xml << 'EOF'
+cat > app/src/main/res/drawable/ic_delete.xml << 'EOF'
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="24dp" android:height="24dp"
     android:viewportWidth="24" android:viewportHeight="24">
